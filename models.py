@@ -7,6 +7,7 @@ Author:
 import layers
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class BiDAF(nn.Module):
@@ -70,3 +71,68 @@ class BiDAF(nn.Module):
         out = self.out(att, mod, c_mask)  # 2 tensors, each (batch_size, c_len)
 
         return out
+
+
+class QANet(nn.Module):
+    def __init__(self, word_vectors, hidden_size, num_head, max_len, drop_prob=0.):
+        super(QANet, self).__init__()
+        self.drop_prob = drop_prob
+
+        self.emb = layers.Embedding(word_vectors=word_vectors,
+                                    hidden_size=hidden_size,
+                                    drop_prob=drop_prob)
+        self.ln_emb = nn.LayerNorm(hidden_size)
+
+        self.enc = layers.QANetStack(hidden_size=hidden_size,
+                                     num_layers=1,
+                                     num_head=num_head,
+                                     kernel_size=7,
+                                     cnn_layer=4,
+                                     max_len=max_len,
+                                     gain=0.3,
+                                     drop_prob=drop_prob)
+
+        self.att = layers.BiDAFAttention(hidden_size=hidden_size,
+                                         drop_prob=drop_prob)
+
+        self.out = layers.QANetOutput(hidden_size=hidden_size,
+                                      num_head=num_head,
+                                      max_len=max_len,
+                                      drop_prob=drop_prob)
+
+    def forward(self, cw_idxs, qw_idxs):
+        c_mask = torch.zeros_like(cw_idxs) != cw_idxs
+        q_mask = torch.zeros_like(qw_idxs) != qw_idxs
+        c_len, q_len = c_mask.sum(-1), q_mask.sum(-1)
+
+        c_emb = self.emb(cw_idxs)         # (batch_size, c_len, hidden_size)
+        q_emb = self.emb(qw_idxs)         # (batch_size, q_len, hidden_size)
+        c_emb = self.ln_emb(c_emb)
+        q_emb = self.ln_emb(q_emb)
+
+        c_enc = self.enc(c_emb, c_mask)    # (batch_size, c_len, hidden_size)
+        q_enc = self.enc(q_emb, q_mask)    # (batch_size, q_len, hidden_size)
+
+        att = self.att(c_enc, q_enc,
+                       c_mask, q_mask)    # (batch_size, c_len, 4 * hidden_size)
+
+        out = self.out(att, c_mask)  # 2 tensors, each (batch_size, c_len)
+
+        return out
+
+
+def get_model(args, word_vectors):
+    if args.model.lower() == "bidaf":
+        model = BiDAF(word_vectors=word_vectors,
+                      hidden_size=args.hidden_size,
+                      drop_prob=args.drop_prob)
+    elif args.model.lower() == "qanet":
+        model = QANet(word_vectors=word_vectors,
+                      hidden_size=args.hidden_size,
+                      num_head=args.num_head,
+                      max_len=args.max_len,
+                      drop_prob=args.drop_prob)
+    else:
+        raise NotImplementedError(f"unknown model type {args.model}")
+
+    return model

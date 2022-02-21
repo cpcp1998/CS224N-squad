@@ -5,6 +5,7 @@ Author:
 """
 
 import argparse
+import json
 
 
 def get_setup_args():
@@ -109,10 +110,6 @@ def get_train_args():
                         type=int,
                         default=30,
                         help='Number of epochs for which to train. Negative means forever.')
-    parser.add_argument('--drop_prob',
-                        type=float,
-                        default=0.2,
-                        help='Probability of zeroing an activation in dropout layers.')
     parser.add_argument('--metric_name',
                         type=str,
                         default='F1',
@@ -134,8 +131,22 @@ def get_train_args():
                         type=float,
                         default=0.999,
                         help='Decay rate for exponential moving average of parameters.')
+    parser.add_argument('--optimizer',
+                        type=str,
+                        default='adadelta',
+                        help='Optimizer')
+    parser.add_argument('--warmup',
+                        type=int,
+                        default=0,
+                        help='Warming up steps')
 
     args = parser.parse_args()
+
+    if args.config is not None:
+        with open(args.config) as fh:
+            config = json.load(fh)
+        for k, v in config.items():
+            setattr(args, k, v)
 
     if args.metric_name == 'NLL':
         # Best checkpoint is the one that minimizes negative log-likelihood
@@ -168,6 +179,13 @@ def get_test_args():
 
     # Require load_path for test.py
     args = parser.parse_args()
+
+    if args.config is not None:
+        with open(args.config) as fh:
+            config = json.load(fh)
+        for k, v in config.items():
+            setattr(args, k, v)
+
     if not args.load_path:
         raise argparse.ArgumentError('Missing required argument --load_path')
 
@@ -242,3 +260,27 @@ def add_train_test_args(parser):
                         type=str,
                         default=None,
                         help='Path to load as a model checkpoint.')
+    parser.add_argument('--model',
+                        type=str,
+                        default="BiDAF",
+                        help='Name of the model.')
+    parser.add_argument('--num_head',
+                        type=int,
+                        default=8,
+                        help='Number of heads in self attention')
+    parser.add_argument('--max_len',
+                        type=int,
+                        default=1024,
+                        help='Max length of sequence')
+    parser.add_argument('--kernel_size',
+                        type=int,
+                        default=7,
+                        help='Kernel size for CNN layers')
+    parser.add_argument('--config',
+                        type=str,
+                        default=None,
+                        help='Configure file')
+    parser.add_argument('--drop_prob',
+                        type=float,
+                        default=0.2,
+                        help='Probability of zeroing an activation in dropout layers.')

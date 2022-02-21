@@ -17,7 +17,7 @@ import util
 from args import get_train_args
 from collections import OrderedDict
 from json import dumps
-from models import BiDAF
+from models import get_model
 from tensorboardX import SummaryWriter
 from tqdm import tqdm
 from ujson import load as json_load
@@ -46,9 +46,7 @@ def main(args):
 
     # Get model
     log.info('Building model...')
-    model = BiDAF(word_vectors=word_vectors,
-                  hidden_size=args.hidden_size,
-                  drop_prob=args.drop_prob)
+    model = get_model(args, word_vectors)
     model = nn.DataParallel(model, args.gpu_ids)
     if args.load_path:
         log.info(f'Loading checkpoint from {args.load_path}...')
@@ -67,9 +65,18 @@ def main(args):
                                  log=log)
 
     # Get optimizer and scheduler
-    optimizer = optim.Adadelta(model.parameters(), args.lr,
+    if args.optimizer.lower() == 'adadelta':
+        optimizer = optim.Adadelta(model.parameters(), args.lr,
+                                   weight_decay=args.l2_wd)
+    elif args.optimizer.lower() == 'adam':
+        optimizer = optim.Adam(model.parameters(), args.lr,
                                weight_decay=args.l2_wd)
-    scheduler = sched.LambdaLR(optimizer, lambda s: 1.)  # Constant LR
+    else:
+        raise NotImplementedError(f"Unknown optimizer {args.optimizer}")
+    if args.warmup <= 0:
+        scheduler = sched.LambdaLR(optimizer, lambda s: 1.)  # Constant LR
+    else:
+        scheduler = sched.LambdaLR(optimizer, lambda s: s/args.warmup if s < args.warmup else 1.)
 
     # Get data loader
     log.info('Building dataset...')
