@@ -395,7 +395,7 @@ class QANetOutput(nn.Module):
                               kernel_size=5,
                               cnn_layer=2,
                               max_len=max_len,
-                              gain=0.3,
+                              gain=0.5,
                               drop_prob=drop_prob)
         self.linear_1 = nn.Linear(2*hidden_size, 1)
         self.linear_2 = nn.Linear(2*hidden_size, 1)

@@ -89,7 +89,7 @@ class QANet(nn.Module):
                                      kernel_size=7,
                                      cnn_layer=4,
                                      max_len=max_len,
-                                     gain=0.3,
+                                     gain=0.5,
                                      drop_prob=drop_prob)
 
         self.att = layers.BiDAFAttention(hidden_size=hidden_size,
