@@ -70,6 +70,28 @@ class HighwayEncoder(nn.Module):
         return x
 
 
+class CharEmbedding(nn.Module):
+    def __init__(self, word_vectors, char_emb_dim, hidden_size, drop_prob):
+        super(CharEmbedding, self).__init__()
+        self.drop_prob = drop_prob
+        self.embed = nn.Embedding.from_pretrained(word_vectors)
+        self.char_embed = nn.Embedding(257, char_emb_dim) # 256 for UNK
+        self.char_embed.weight.data.normal_(0, word_vectors.std() / 4)
+        self.proj = nn.Linear(word_vectors.size(1)+char_emb_dim, hidden_size, bias=False)
+        self.hwy = HighwayEncoder(2, hidden_size)
+
+    def forward(self, w, c):
+        emb_w = self.embed(w)   # (batch_size, seq_len, embed_size)
+        emb_c = self.char_embed(torch.minimum(c, torch.full_like(c, 256)))
+        emb_c, _ = emb_c.max(dim=-2)
+        emb = torch.cat((emb_w, emb_c), dim=-1)
+        emb = F.dropout(emb, self.drop_prob, self.training)
+        emb = self.proj(emb)  # (batch_size, seq_len, hidden_size)
+        emb = self.hwy(emb)   # (batch_size, seq_len, hidden_size)
+
+        return emb
+
+
 class SinusoidalPositionEmbedding(nn.Module):
     def __init__(self, hidden_size, max_len):
         super(SinusoidalPositionEmbedding, self).__init__()

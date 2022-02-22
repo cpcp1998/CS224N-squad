@@ -106,11 +106,17 @@ def main(args):
                 # Setup for forward
                 cw_idxs = cw_idxs.to(device)
                 qw_idxs = qw_idxs.to(device)
+                if args.char_emb:
+                    cc_idxs = cc_idxs.to(device)
+                    qc_idxs = qc_idxs.to(device)
                 batch_size = cw_idxs.size(0)
                 optimizer.zero_grad()
 
                 # Forward
-                log_p1, log_p2 = model(cw_idxs, qw_idxs)
+                if args.char_emb:
+                    log_p1, log_p2 = model(cw_idxs, qw_idxs, cc_idxs, qc_idxs)
+                else:
+                    log_p1, log_p2 = model(cw_idxs, qw_idxs)
                 y1, y2 = y1.to(device), y2.to(device)
                 loss = F.nll_loss(log_p1, y1) + F.nll_loss(log_p2, y2)
                 loss_val = loss.item()
@@ -142,6 +148,7 @@ def main(args):
                     results, pred_dict = evaluate(model, dev_loader, device,
                                                   args.dev_eval_file,
                                                   args.max_ans_len,
+                                                  args.char_emb,
                                                   args.use_squad_v2)
                     saver.save(step, model, results[args.metric_name], device)
                     ema.resume(model)
@@ -162,7 +169,7 @@ def main(args):
                                    num_visuals=args.num_visuals)
 
 
-def evaluate(model, data_loader, device, eval_file, max_len, use_squad_v2):
+def evaluate(model, data_loader, device, eval_file, max_len, char_emb, use_squad_v2):
     nll_meter = util.AverageMeter()
 
     model.eval()
@@ -178,7 +185,10 @@ def evaluate(model, data_loader, device, eval_file, max_len, use_squad_v2):
             batch_size = cw_idxs.size(0)
 
             # Forward
-            log_p1, log_p2 = model(cw_idxs, qw_idxs)
+            if char_emb:
+                log_p1, log_p2 = model(cw_idxs, qw_idxs, cc_idxs, qc_idxs)
+            else:
+                log_p1, log_p2 = model(cw_idxs, qw_idxs)
             y1, y2 = y1.to(device), y2.to(device)
             loss = F.nll_loss(log_p1, y1) + F.nll_loss(log_p2, y2)
             nll_meter.update(loss.item(), batch_size)

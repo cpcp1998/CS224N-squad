@@ -284,3 +284,11 @@ def add_train_test_args(parser):
                         type=float,
                         default=0.2,
                         help='Probability of zeroing an activation in dropout layers.')
+    parser.add_argument('--char_emb',
+                        dest='char_emb',
+                        action='store_true',
+                        help='Whether use character embedding.')
+    parser.add_argument('--char_emb_dim',
+                        type=int,
+                        default=200,
+                        help='Dimension of character embedding.')
