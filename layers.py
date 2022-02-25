@@ -75,7 +75,7 @@ class CharEmbedding(nn.Module):
         super(CharEmbedding, self).__init__()
         self.drop_prob = drop_prob
         self.embed = nn.Embedding.from_pretrained(word_vectors)
-        self.char_embed = nn.Embedding(257, char_emb_dim) # 256 for UNK
+        self.char_embed = nn.Embedding(257, char_emb_dim, padding_idx=0) # 256 for UNK
         self.char_embed.weight.data.normal_(0, word_vectors.std() / 4)
         self.proj = nn.Linear(word_vectors.size(1)+char_emb_dim, hidden_size, bias=False)
         self.hwy = HighwayEncoder(2, hidden_size)
@@ -156,13 +156,13 @@ class RNNEncoder(nn.Module):
         return x
 
 
-class SelfAttention(nn.Module):
+class MultiheadAttention(nn.Module):
     def __init__(self,
                  hidden_size,
                  attention_size,
                  num_head,
                  drop_prob=0.):
-        super(SelfAttention, self).__init__()
+        super(MultiheadAttention, self).__init__()
 
         assert attention_size % num_head == 0
         self.num_head = num_head
@@ -176,11 +176,12 @@ class SelfAttention(nn.Module):
         self.v_linear = nn.Linear(hidden_size, attention_size)
         self.o_linear = nn.Linear(attention_size, hidden_size)
 
-    def forward(self, x, mask):
-        batch_size, seq_len, _ = x.shape
-        q = self.q_linear(x).view(batch_size, seq_len, self.num_head, self.head_size).transpose(1, 2)
-        k = self.k_linear(x).view(batch_size, seq_len, self.num_head, self.head_size).transpose(1, 2)
-        v = self.v_linear(x).view(batch_size, seq_len, self.num_head, self.head_size).transpose(1, 2)
+    def forward(self, x, y, mask):
+        batch_size, src_len, _ = x.shape
+        _, tgt_len, _ = y.shape
+        q = self.q_linear(x).view(batch_size, src_len, self.num_head, self.head_size).transpose(1, 2)
+        k = self.k_linear(y).view(batch_size, tgt_len, self.num_head, self.head_size).transpose(1, 2)
+        v = self.v_linear(y).view(batch_size, tgt_len, self.num_head, self.head_size).transpose(1, 2)
 
         attn = torch.matmul(q, k.transpose(-1, -2))
         attn = attn / math.sqrt(self.head_size)
@@ -191,12 +192,17 @@ class SelfAttention(nn.Module):
         attn = self.attn_dropout(attn)
 
         o = torch.matmul(attn, v)
-        o = o.transpose(1, 2).reshape(batch_size, seq_len, -1)
+        o = o.transpose(1, 2).reshape(batch_size, src_len, -1)
         o = self.o_linear(o)
 
         o = self.dropout(o)
 
         return o
+
+
+class SelfAttention(MultiheadAttention):
+    def forward(self, x, mask):
+        return super(SelfAttention, self).forward(x, x, mask)
 
 
 class FeedForward(nn.Module):
@@ -211,7 +217,7 @@ class FeedForward(nn.Module):
         self.linear_1 = nn.Linear(hidden_size, ff_size)
         self.linear_2 = nn.Linear(ff_size, hidden_size)
 
-    def forward(self, x, mask):
+    def forward(self, x):
         x = self.linear_1(x)
         x = F.gelu(x)
         x = self.linear_2(x)
@@ -245,9 +251,9 @@ class ResidualBlock(nn.Module):
         self.ln_2 = nn.LayerNorm(hidden_size)
         self.gain = gain
 
-    def forward(self, x, mask):
+    def forward(self, x, *args, **kwargs):
         y = self.ln_1(x)
-        y = self.transform(y, mask)
+        y = self.transform(y, *args, **kwargs)
         y = self.ln_2(y)
         return x + y * self.gain
 
@@ -276,7 +282,7 @@ class QANetBlock(nn.Module):
         for cnn in self.cnn:
             x = cnn(x, mask)
         x = self.attn(x, mask)
-        x = self.ff(x, mask)
+        x = self.ff(x)
         return x
 
 
