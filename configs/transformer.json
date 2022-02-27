@@ -1,0 +1,11 @@
+{
+    "model": "Transformer",
+    "hidden_size": 128,
+    "num_head": 8,
+    "batch_size": 32,
+    "lr": 1e-3,
+    "optimizer": "adam",
+    "warmup": 2000,
+    "drop_prob": 0.1,
+    "char_emb": true
+}

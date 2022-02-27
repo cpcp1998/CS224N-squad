@@ -8,6 +8,7 @@ import layers
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from util import masked_softmax
 
 
 class BiDAF(nn.Module):
@@ -90,6 +91,7 @@ class QANet(nn.Module):
                                      cnn_layer=4,
                                      max_len=max_len,
                                      gain=0.5,
+                                     s4=False,
                                      drop_prob=drop_prob)
 
         self.att = layers.BiDAFAttention(hidden_size=hidden_size,
@@ -98,6 +100,7 @@ class QANet(nn.Module):
         self.out = layers.QANetOutput(hidden_size=hidden_size,
                                       num_head=num_head,
                                       max_len=max_len,
+                                      s4=False,
                                       drop_prob=drop_prob)
 
     def forward(self, cw_idxs, qw_idxs):
@@ -122,7 +125,7 @@ class QANet(nn.Module):
 
 
 class QANetChar(nn.Module):
-    def __init__(self, word_vectors, char_emb_dim, hidden_size, num_head, max_len, drop_prob=0.):
+    def __init__(self, word_vectors, char_emb_dim, hidden_size, num_head, max_len, s4=False, attn=True, drop_prob=0.):
         super(QANetChar, self).__init__()
         self.drop_prob = drop_prob
 
@@ -139,6 +142,8 @@ class QANetChar(nn.Module):
                                      cnn_layer=4,
                                      max_len=max_len,
                                      gain=0.5,
+                                     s4=s4,
+                                     attn=attn,
                                      drop_prob=drop_prob)
 
         self.att = layers.BiDAFAttention(hidden_size=hidden_size,
@@ -147,6 +152,8 @@ class QANetChar(nn.Module):
         self.out = layers.QANetOutput(hidden_size=hidden_size,
                                       num_head=num_head,
                                       max_len=max_len,
+                                      s4=s4,
+                                      attn=attn,
                                       drop_prob=drop_prob)
 
     def forward(self, cw_idxs, qw_idxs, cc_idxs, qc_idxs):
@@ -170,6 +177,46 @@ class QANetChar(nn.Module):
         return out
 
 
+class Transformer(nn.Module):
+    def __init__(self, word_vectors, char_emb_dim, hidden_size, num_head, max_len, drop_prob=0.):
+        super(Transformer, self).__init__()
+        self.drop_prob = drop_prob
+
+        self.emb = layers.CharEmbedding(word_vectors=word_vectors,
+                                        char_emb_dim=char_emb_dim,
+                                        hidden_size=hidden_size,
+                                        drop_prob=drop_prob)
+        self.ln_emb = nn.LayerNorm(hidden_size)
+
+        self.enc = layers.TransformerStack(hidden_size=hidden_size,
+                                           num_layers=8,
+                                           num_head=num_head,
+                                           kernel_size=5,
+                                           cnn_layer=2,
+                                           max_len=max_len,
+                                           gain=0.5,
+                                           drop_prob=drop_prob)
+        self.linear_1 = nn.Linear(hidden_size, 1)
+        self.linear_2 = nn.Linear(hidden_size, 1)
+
+    def forward(self, cw_idxs, qw_idxs, cc_idxs, qc_idxs):
+        c_mask = torch.zeros_like(cw_idxs) != cw_idxs
+        q_mask = torch.zeros_like(qw_idxs) != qw_idxs
+
+        c_emb = self.ln_emb(self.emb(cw_idxs, cc_idxs))
+        q_emb = self.ln_emb(self.emb(qw_idxs, qc_idxs))
+
+        c_enc, q_enc = self.enc(c_emb, q_emb, c_mask, q_mask)
+
+        logits_1 = self.linear_1(c_enc)
+        logits_2 = self.linear_2(c_enc)
+
+        log_p1 = masked_softmax(logits_1.squeeze(), c_mask, log_softmax=True)
+        log_p2 = masked_softmax(logits_2.squeeze(), c_mask, log_softmax=True)
+
+        return log_p1, log_p2
+
+
 def get_model(args, word_vectors):
     if args.model.lower() == "bidaf":
         model = BiDAF(word_vectors=word_vectors,
@@ -188,6 +235,30 @@ def get_model(args, word_vectors):
                           num_head=args.num_head,
                           max_len=args.max_len,
                           drop_prob=args.drop_prob)
+    elif args.model.lower() == "qanet-cnn":
+        model = QANetChar(word_vectors=word_vectors,
+                          char_emb_dim=args.char_emb_dim,
+                          hidden_size=args.hidden_size,
+                          num_head=args.num_head,
+                          max_len=args.max_len,
+                          attn=False,
+                          drop_prob=args.drop_prob)
+    elif args.model.lower() == "s4":
+        model = QANetChar(word_vectors=word_vectors,
+                          char_emb_dim=args.char_emb_dim,
+                          hidden_size=args.hidden_size,
+                          num_head=args.num_head,
+                          max_len=args.max_len,
+                          s4=True,
+                          attn=False,
+                          drop_prob=args.drop_prob)
+    elif args.model.lower() == "transformer":
+        model = Transformer(word_vectors=word_vectors,
+                            char_emb_dim=args.char_emb_dim,
+                            hidden_size=args.hidden_size,
+                            num_head=args.num_head,
+                            max_len=args.max_len,
+                            drop_prob=args.drop_prob)
     else:
         raise NotImplementedError(f"unknown model type {args.model}")
 

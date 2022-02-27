@@ -12,6 +12,7 @@ import torch.nn.functional as F
 
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from util import masked_softmax
+from s4 import S4, BiS4
 
 
 class Embedding(nn.Module):
@@ -205,6 +206,68 @@ class SelfAttention(MultiheadAttention):
         return super(SelfAttention, self).forward(x, x, mask)
 
 
+class CrossAttention(MultiheadAttention):
+    def __init__(self, hidden_size, attention_size, num_head, drop_prob=0.):
+        super(CrossAttention, self).__init__(hidden_size, attention_size, num_head, drop_prob)
+        self.ln = nn.LayerNorm(hidden_size)
+
+    def forward(self, x, y, mask):
+        return super(CrossAttention, self).forward(x, self.ln(y), mask)
+
+
+class SymCrossAttention(nn.Module):
+    def __init__(self,
+                 hidden_size,
+                 attention_size,
+                 num_head,
+                 drop_prob=0.):
+        super(SymCrossAttention, self).__init__()
+
+        assert attention_size % num_head == 0
+        self.num_head = num_head
+        self.head_size = attention_size // num_head
+
+        self.attn_dropout = nn.Dropout(drop_prob)
+        self.dropout = nn.Dropout(drop_prob)
+
+        self.q_linear = nn.Linear(hidden_size, attention_size)
+        self.k_linear = nn.Linear(hidden_size, attention_size)
+        self.v_linear = nn.Linear(hidden_size, attention_size)
+        self.o_linear = nn.Linear(attention_size, hidden_size)
+
+    def forward(self, src, tgt, src_mask, tgt_mask):
+        batch_size, src_len, _ = src.shape
+        _, tgt_len, _ = tgt.shape
+        q = self.q_linear(src).view(batch_size, src_len, self.num_head, self.head_size).transpose(1, 2)
+        k = self.k_linear(tgt).view(batch_size, tgt_len, self.num_head, self.head_size).transpose(1, 2)
+        v_src = self.v_linear(src).view(batch_size, src_len, self.num_head, self.head_size).transpose(1, 2)
+        v_tgt = self.v_linear(tgt).view(batch_size, tgt_len, self.num_head, self.head_size).transpose(1, 2)
+
+        attn = torch.matmul(q, k.transpose(-1, -2))
+        attn = attn / math.sqrt(self.head_size)
+        src_mask = src_mask.unsqueeze(1).unsqueeze(3)
+        tgt_mask = tgt_mask.unsqueeze(1).unsqueeze(2)
+        attn_src = attn * src_mask - 1e5 * (~src_mask)
+        attn_tgt = attn * tgt_mask - 1e5 * (~tgt_mask)
+        attn_src = F.softmax(attn_src, dim=-1)
+        attn_tgt = F.softmax(attn_tgt.transpose(-1, -2), dim=-1)
+
+        attn_src = self.attn_dropout(attn_src)
+        attn_tgt = self.attn_dropout(attn_tgt)
+
+        o_src = torch.matmul(attn_src, v_tgt)
+        o_tgt = torch.matmul(attn_tgt, v_src)
+        o_src = o_src.transpose(1, 2).reshape(batch_size, src_len, -1)
+        o_tgt = o_tgt.transpose(1, 2).reshape(batch_size, tgt_len, -1)
+        o_src = self.o_linear(o_src)
+        o_tgt = self.o_linear(o_tgt)
+
+        o_src = self.dropout(o_src)
+        o_tgt = self.dropout(o_tgt)
+
+        return o_src, o_tgt
+
+
 class FeedForward(nn.Module):
     def __init__(self,
                  hidden_size,
@@ -258,6 +321,25 @@ class ResidualBlock(nn.Module):
         return x + y * self.gain
 
 
+class ResidualBlock2(nn.Module):
+    def __init__(self, hidden_size, gain, transform):
+        super(ResidualBlock2, self).__init__()
+
+        self.ln_1 = nn.LayerNorm(hidden_size)
+        self.transform = transform
+        self.ln_2 = nn.LayerNorm(hidden_size)
+        self.gain = gain
+
+    def forward(self, x, y, *args, **kwargs):
+        x0, y0 = x, y
+        x = self.ln_1(x)
+        y = self.ln_1(y)
+        x, y = self.transform(x, y, *args, **kwargs)
+        x = self.ln_2(x)
+        y = self.ln_2(y)
+        return x0 + x*self.gain, y0 + y*self.gain
+
+
 class QANetBlock(nn.Module):
     def __init__(self,
                  hidden_size,
@@ -266,14 +348,22 @@ class QANetBlock(nn.Module):
                  cnn_layer,
                  max_len,
                  gain,
+                 s4=False,
+                 attn=True,
                  drop_prob=0.):
         super(QANetBlock, self).__init__()
         self.pos_emb = SinusoidalPositionEmbedding(hidden_size, max_len)
         self.cnn = nn.ModuleList([ResidualBlock(hidden_size, gain,
                                                 CNN(hidden_size, kernel_size, drop_prob))
                                   for _ in range(cnn_layer)])
-        self.attn = ResidualBlock(hidden_size, gain,
-                                  SelfAttention(hidden_size, hidden_size, num_head, drop_prob))
+        self.use_s4 = s4
+        self.use_attn = attn
+        if attn:
+            self.attn = ResidualBlock(hidden_size, gain,
+                                      SelfAttention(hidden_size, hidden_size, num_head, drop_prob))
+        if s4:
+            self.s4 = ResidualBlock(hidden_size, gain,
+                                    BiS4(hidden_size, 32, max_len, drop_prob))
         self.ff = ResidualBlock(hidden_size, gain,
                                 FeedForward(hidden_size, hidden_size, drop_prob))
 
@@ -281,7 +371,10 @@ class QANetBlock(nn.Module):
         x = x + self.pos_emb(x)
         for cnn in self.cnn:
             x = cnn(x, mask)
-        x = self.attn(x, mask)
+        if self.use_attn:
+            x = self.attn(x, mask)
+        if self.use_s4:
+            x = self.s4(x, mask)
         x = self.ff(x)
         return x
 
@@ -295,15 +388,90 @@ class QANetStack(nn.Module):
                  cnn_layer,
                  max_len,
                  gain,
+                 s4=False,
+                 attn=True,
                  drop_prob=0.):
         super(QANetStack, self).__init__()
-        self.blocks = nn.ModuleList([QANetBlock(hidden_size, num_head, kernel_size, cnn_layer, max_len, gain, drop_prob)
+        self.blocks = nn.ModuleList([QANetBlock(hidden_size, num_head, kernel_size, cnn_layer, max_len, gain, s4, attn, drop_prob)
                                      for _ in range(num_layers)])
 
     def forward(self, x, mask):
         for block in self.blocks:
             x = block(x, mask)
         return x
+
+
+class TransformerBlock(nn.Module):
+    def __init__(self,
+                 hidden_size,
+                 num_head,
+                 kernel_size,
+                 cnn_layer,
+                 max_len,
+                 gain,
+                 drop_prob=0.):
+        super(TransformerBlock, self).__init__()
+        self.pos_emb = SinusoidalPositionEmbedding(hidden_size, max_len)
+        self.cnn_x = nn.ModuleList([ResidualBlock(hidden_size, gain,
+                                                  CNN(hidden_size, kernel_size, drop_prob))
+                                    for _ in range(cnn_layer)])
+        self.cnn_y = self.cnn_x
+        # self.cnn_y = nn.ModuleList([ResidualBlock(hidden_size, gain,
+        #                                           CNN(hidden_size, kernel_size, drop_prob))
+        #                             for _ in range(cnn_layer)])
+        self.self_attn_x = ResidualBlock(hidden_size, gain,
+                                         SelfAttention(hidden_size, hidden_size, num_head, drop_prob))
+        self.self_attn_y = self.self_attn_x
+        # self.self_attn_y = ResidualBlock(hidden_size, gain,
+        #                                  SelfAttention(hidden_size, hidden_size, num_head, drop_prob))
+        self.cross_attn = ResidualBlock2(hidden_size, 2*gain,
+                                         SymCrossAttention(hidden_size, hidden_size, num_head, drop_prob))
+        # self.cross_attn_x = ResidualBlock(hidden_size, gain,
+        #                                   CrossAttention(hidden_size, hidden_size, num_head, drop_prob))
+        # self.cross_attn_y = self.cross_attn_x
+        # self.cross_attn_y = ResidualBlock(hidden_size, gain,
+        #                                   CrossAttention(hidden_size, hidden_size, num_head, drop_prob))
+        self.ff_x = ResidualBlock(hidden_size, gain,
+                                  FeedForward(hidden_size, hidden_size, drop_prob))
+        self.ff_y = self.ff_x
+        # self.ff_y = ResidualBlock(hidden_size, gain,
+        #                           FeedForward(hidden_size, hidden_size, drop_prob))
+
+    def forward(self, x, y, x_mask, y_mask):
+        x = x + self.pos_emb(x)
+        y = y + self.pos_emb(y)
+        for cnn in self.cnn_x:
+            x = cnn(x, x_mask)
+        for cnn in self.cnn_y:
+            y = cnn(y, y_mask)
+        x = self.self_attn_x(x, x_mask)
+        y = self.self_attn_y(y, y_mask)
+        # x = self.cross_attn_x(x, y, y_mask)
+        # y = self.cross_attn_y(y, x, x_mask)
+        x, y = self.cross_attn(x, y, x_mask, y_mask)
+        x = self.ff_x(x)
+        y = self.ff_y(y)
+        return x, y
+
+
+class TransformerStack(nn.Module):
+    def __init__(self,
+                 hidden_size,
+                 num_head,
+                 num_layers,
+                 kernel_size,
+                 cnn_layer,
+                 max_len,
+                 gain,
+                 drop_prob=0.):
+        super(TransformerStack, self).__init__()
+        self.blocks = nn.ModuleList([TransformerBlock(hidden_size, num_head, kernel_size, cnn_layer, max_len, gain, drop_prob)
+                                     for _ in range(num_layers)])
+
+    def forward(self, x, y, x_mask, y_mask):
+        for block in self.blocks:
+            x, y = block(x, y, x_mask, y_mask)
+        return x, y
 
 
 class BiDAFAttention(nn.Module):
@@ -414,7 +582,7 @@ class BiDAFOutput(nn.Module):
 
 
 class QANetOutput(nn.Module):
-    def __init__(self, hidden_size, num_head, max_len, drop_prob):
+    def __init__(self, hidden_size, num_head, max_len, s4, attn, drop_prob):
         super(QANetOutput, self).__init__()
         self.input = nn.Linear(4 * hidden_size, hidden_size)
         self.mod = QANetStack(hidden_size=hidden_size,
@@ -424,6 +592,8 @@ class QANetOutput(nn.Module):
                               cnn_layer=2,
                               max_len=max_len,
                               gain=0.5,
+                              s4=s4,
+                              attn=attn,
                               drop_prob=drop_prob)
         self.linear_1 = nn.Linear(2*hidden_size, 1)
         self.linear_2 = nn.Linear(2*hidden_size, 1)
