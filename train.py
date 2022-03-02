@@ -65,11 +65,22 @@ def main(args):
                                  log=log)
 
     # Get optimizer and scheduler
+    general_params = []
+    s4_kernel_params = []
+    for name, param in model.named_parameters():
+        if "s4_kernel" in name:
+            s4_kernel_params.append(param)
+        else:
+            general_params.append(param)
+    parameters = [
+        {"params": general_params},
+        {"params": s4_kernel_params, "lr": args.lr},
+    ]
     if args.optimizer.lower() == 'adadelta':
-        optimizer = optim.Adadelta(model.parameters(), args.lr,
+        optimizer = optim.Adadelta(parameters, args.lr,
                                    weight_decay=args.l2_wd)
     elif args.optimizer.lower() == 'adam':
-        optimizer = optim.Adam(model.parameters(), args.lr,
+        optimizer = optim.Adam(parameters, args.lr,
                                weight_decay=args.l2_wd)
     else:
         raise NotImplementedError(f"Unknown optimizer {args.optimizer}")
@@ -125,6 +136,8 @@ def main(args):
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
                 optimizer.step()
+                if hasattr(model.module, "reset_s4"):
+                    model.module.reset_s4()
                 scheduler.step(step // batch_size)
                 ema(model, step // batch_size)
 

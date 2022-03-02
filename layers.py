@@ -321,6 +321,18 @@ class ResidualBlock(nn.Module):
         return x + y * self.gain
 
 
+class ResidualBlockPostNorm(nn.Module):
+    def __init__(self, hidden_size, transform):
+        super(ResidualBlockPostNorm, self).__init__()
+
+        self.ln = nn.LayerNorm(hidden_size)
+        self.transform = transform
+
+    def forward(self, x, *args, **kwargs):
+        y = self.transform(x, *args, **kwargs)
+        return self.ln(x + y)
+
+
 class ResidualBlock2(nn.Module):
     def __init__(self, hidden_size, gain, transform):
         super(ResidualBlock2, self).__init__()
@@ -363,7 +375,7 @@ class QANetBlock(nn.Module):
                                       SelfAttention(hidden_size, hidden_size, num_head, drop_prob))
         if s4:
             self.s4 = ResidualBlock(hidden_size, gain,
-                                    BiS4(hidden_size, 32, max_len, drop_prob))
+                                    BiS4(hidden_size, 64, max_len, drop_prob))
         self.ff = ResidualBlock(hidden_size, gain,
                                 FeedForward(hidden_size, hidden_size, drop_prob))
 
@@ -377,6 +389,10 @@ class QANetBlock(nn.Module):
             x = self.s4(x, mask)
         x = self.ff(x)
         return x
+
+    def reset_s4(self):
+        if self.use_s4:
+            self.s4.transform.reset_s4()
 
 
 class QANetStack(nn.Module):
@@ -399,6 +415,32 @@ class QANetStack(nn.Module):
         for block in self.blocks:
             x = block(x, mask)
         return x
+
+    def reset_s4(self):
+        for block in self.blocks:
+            block.reset_s4()
+
+
+class S4Stack(nn.Module):
+    def __init__(self,
+                 hidden_size,
+                 num_layers,
+                 max_len,
+                 gain,
+                 drop_prob=0.):
+        super(S4Stack, self).__init__()
+        self.blocks = nn.ModuleList([ResidualBlock(hidden_size, gain,
+                                                           BiS4(hidden_size, 64, max_len, drop_prob))
+                                     for _ in range(num_layers)])
+
+    def forward(self, x, mask):
+        for block in self.blocks:
+            x = block(x, mask)
+        return x
+
+    def reset_s4(self):
+        for block in self.blocks:
+            block.transform.reset_s4()
 
 
 class TransformerBlock(nn.Module):
@@ -612,3 +654,37 @@ class QANetOutput(nn.Module):
         log_p2 = masked_softmax(logits_2.squeeze(), mask, log_softmax=True)
 
         return log_p1, log_p2
+
+    def reset_s4(self):
+        self.mod.reset_s4()
+
+
+class S4Output(nn.Module):
+    def __init__(self, hidden_size, max_len, drop_prob):
+        super(S4Output, self).__init__()
+        self.input = nn.Linear(4 * hidden_size, hidden_size)
+        self.mod = S4Stack(hidden_size=hidden_size,
+                           num_layers=12,
+                           max_len=max_len,
+                           gain=0.5,
+                           drop_prob=drop_prob)
+        self.linear_1 = nn.Linear(2*hidden_size, 1)
+        self.linear_2 = nn.Linear(2*hidden_size, 1)
+
+    def forward(self, att, mask):
+        att = self.input(att)
+        m0 = self.mod(att, mask)
+        m1 = self.mod(m0, mask)
+        m2 = self.mod(m1, mask)
+        # Shapes: (batch_size, seq_len, 1)
+        logits_1 = self.linear_1(torch.cat((m0, m1), dim=-1))
+        logits_2 = self.linear_2(torch.cat((m0, m2), dim=-1))
+
+        # Shapes: (batch_size, seq_len)
+        log_p1 = masked_softmax(logits_1.squeeze(), mask, log_softmax=True)
+        log_p2 = masked_softmax(logits_2.squeeze(), mask, log_softmax=True)
+
+        return log_p1, log_p2
+
+    def reset_s4(self):
+        self.mod.reset_s4()
