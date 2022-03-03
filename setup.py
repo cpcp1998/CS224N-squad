@@ -173,8 +173,8 @@ def get_embedding(counter, data_type, limit=-1, emb_file=None, vec_size=None, nu
     token2idx_dict = {token: idx for idx, token in enumerate(embedding_dict.keys(), 2)}
     token2idx_dict[NULL] = 0
     token2idx_dict[OOV] = 1
+    embedding_dict[OOV] = np.array(list(embedding_dict.values())).mean(axis=0).tolist()
     embedding_dict[NULL] = [0. for _ in range(vec_size)]
-    embedding_dict[OOV] = [0. for _ in range(vec_size)]
     idx2emb_dict = {idx: embedding_dict[token]
                     for token, idx in token2idx_dict.items()}
     emb_mat = [idx2emb_dict[idx] for idx in range(len(idx2emb_dict))]
@@ -243,79 +243,35 @@ def is_answerable(example):
     return len(example['y2s']) > 0 and len(example['y1s']) > 0
 
 
-def build_features(args, examples, data_type, out_file, word2idx_dict, char2idx_dict, is_test=False):
-    para_limit = args.test_para_limit if is_test else args.para_limit
-    ques_limit = args.test_ques_limit if is_test else args.ques_limit
-    ans_limit = args.ans_limit
-    char_limit = args.char_limit
-
-    def drop_example(ex, is_test_=False):
-        if is_test_:
-            drop = False
-        else:
-            drop = len(ex["context_tokens"]) > para_limit or \
-                   len(ex["ques_tokens"]) > ques_limit or \
-                   (is_answerable(ex) and
-                    ex["y2s"][0] - ex["y1s"][0] > ans_limit)
-
-        return drop
-
+def build_features(args, examples, data_type, out_file, word2idx_dict, is_test=False):
     print(f"Converting {data_type} examples to indices...")
-    total = 0
-    total_ = 0
     meta = {}
-    context_idxs = []
-    context_char_idxs = []
-    ques_idxs = []
-    ques_char_idxs = []
+    context_words = []
+    context_word_lens = [0]
+    context_chars = []
+    context_char_lens = [0]
+    ques_words = []
+    ques_word_lens = [0]
+    ques_chars = []
+    ques_char_lens = [0]
     y1s = []
     y2s = []
     ids = []
     for n, example in tqdm(enumerate(examples)):
-        total_ += 1
-
-        if drop_example(example, is_test):
-            continue
-
-        total += 1
-
         def _get_word(word):
             for each in (word, word.lower(), word.capitalize(), word.upper()):
                 if each in word2idx_dict:
                     return word2idx_dict[each]
             return 1
 
-        def _get_char(char):
-            if char in char2idx_dict:
-                return char2idx_dict[char]
-            return 1
-
-        context_idx = np.zeros([para_limit], dtype=np.int32)
-        context_char_idx = np.zeros([para_limit, char_limit], dtype=np.int32)
-        ques_idx = np.zeros([ques_limit], dtype=np.int32)
-        ques_char_idx = np.zeros([ques_limit, char_limit], dtype=np.int32)
-
-        for i, token in enumerate(example["context_tokens"]):
-            context_idx[i] = _get_word(token)
-        context_idxs.append(context_idx)
-
-        for i, token in enumerate(example["ques_tokens"]):
-            ques_idx[i] = _get_word(token)
-        ques_idxs.append(ques_idx)
-
-        for i, token in enumerate(example["context_chars"]):
-            for j, char in enumerate(token):
-                if j == char_limit:
-                    break
-                context_char_idx[i, j] = _get_char(char)
-        context_char_idxs.append(context_char_idx)
-
-        for i, token in enumerate(example["ques_chars"]):
-            for j, char in enumerate(token):
-                if j == char_limit:
-                    break
-                ques_char_idx[i, j] = _get_char(char)
-        ques_char_idxs.append(ques_char_idx)
+        context_words.extend(_get_word(token) for token in example["context_tokens"])
+        context_word_lens.append(len(example["context_tokens"]))
+        ques_words.extend(_get_word(token) for token in example["ques_tokens"])
+        ques_word_lens.append(len(example["ques_tokens"]))
+        context_chars.extend(ord(char) for token in example["context_chars"] for char in token)
+        context_char_lens.extend(len(token) for token in example["context_chars"])
+        ques_chars.extend(ord(char) for token in example["ques_chars"] for char in token)
+        ques_char_lens.extend(len(token) for token in example["ques_chars"])
 
         if is_answerable(example):
             start, end = example["y1s"][-1], example["y2s"][-1]
@@ -327,15 +283,19 @@ def build_features(args, examples, data_type, out_file, word2idx_dict, char2idx_
         ids.append(example["id"])
 
     np.savez(out_file,
-             context_idxs=np.array(context_idxs),
-             context_char_idxs=np.array(context_char_idxs),
-             ques_idxs=np.array(ques_idxs),
-             ques_char_idxs=np.array(ques_char_idxs),
+             context_words=np.array(context_words, dtype=np.int32),
+             context_chars=np.array(context_chars, dtype=np.int32),
+             ques_words=np.array(ques_words, dtype=np.int32),
+             ques_chars=np.array(ques_chars, dtype=np.int32),
+             context_word_idxs=np.array(context_word_lens, dtype=np.int32).cumsum(),
+             context_char_idxs=np.array(context_char_lens, dtype=np.int32).cumsum(),
+             ques_word_idxs=np.array(ques_word_lens, dtype=np.int32).cumsum(),
+             ques_char_idxs=np.array(ques_char_lens, dtype=np.int32).cumsum(),
              y1s=np.array(y1s),
              y2s=np.array(y2s),
              ids=np.array(ids))
-    print(f"Built {total} / {total_} instances of features in total")
-    meta["total"] = total
+    print(f"Built {len(examples)} instances of features in total")
+    meta["total"] = len(examples)
     return meta
 
 
@@ -348,30 +308,29 @@ def save(filename, obj, message=None):
 
 def pre_process(args):
     # Process training set and use it to decide on the word/character vocabularies
+    # Include words in dev and test set, because word embeddings are pretrained
     word_counter, char_counter = Counter(), Counter()
     train_examples, train_eval = process_file(args.train_file, "train", word_counter, char_counter)
+    dev_examples, dev_eval = process_file(args.dev_file, "dev", word_counter, Counter())
+    if args.include_test_examples:
+        test_examples, test_eval = process_file(args.test_file, "test", word_counter, Counter())
+
     word_emb_mat, word2idx_dict = get_embedding(
         word_counter, 'word', emb_file=args.glove_file, vec_size=args.glove_dim, num_vectors=args.glove_num_vecs)
-    char_emb_mat, char2idx_dict = get_embedding(
-        char_counter, 'char', emb_file=None, vec_size=args.char_dim)
 
     # Process dev and test sets
-    dev_examples, dev_eval = process_file(args.dev_file, "dev", word_counter, char_counter)
-    build_features(args, train_examples, "train", args.train_record_file, word2idx_dict, char2idx_dict)
-    dev_meta = build_features(args, dev_examples, "dev", args.dev_record_file, word2idx_dict, char2idx_dict)
+    build_features(args, train_examples, "train", args.train_record_file, word2idx_dict)
+    dev_meta = build_features(args, dev_examples, "dev", args.dev_record_file, word2idx_dict)
     if args.include_test_examples:
-        test_examples, test_eval = process_file(args.test_file, "test", word_counter, char_counter)
         save(args.test_eval_file, test_eval, message="test eval")
         test_meta = build_features(args, test_examples, "test",
-                                   args.test_record_file, word2idx_dict, char2idx_dict, is_test=True)
+                                   args.test_record_file, word2idx_dict, is_test=True)
         save(args.test_meta_file, test_meta, message="test meta")
 
     save(args.word_emb_file, word_emb_mat, message="word embedding")
-    save(args.char_emb_file, char_emb_mat, message="char embedding")
     save(args.train_eval_file, train_eval, message="train eval")
     save(args.dev_eval_file, dev_eval, message="dev eval")
     save(args.word2idx_file, word2idx_dict, message="word dictionary")
-    save(args.char2idx_file, char2idx_dict, message="char dictionary")
     save(args.dev_meta_file, dev_meta, message="dev meta")
 
 

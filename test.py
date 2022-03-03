@@ -53,7 +53,7 @@ def main(args):
     # Get data loader
     log.info('Building dataset...')
     record_file = vars(args)[f'{args.split}_record_file']
-    dataset = SQuAD(record_file, args.use_squad_v2)
+    dataset = SQuAD(record_file, args.use_squad_v2, args.para_limit, args.ques_limit, args.split == 'dev')
     data_loader = data.DataLoader(dataset,
                                   batch_size=args.batch_size,
                                   shuffle=False,
@@ -70,20 +70,18 @@ def main(args):
         gold_dict = json_load(fh)
     with torch.no_grad(), \
             tqdm(total=len(dataset)) as progress_bar:
-        for cw_idxs, cc_idxs, qw_idxs, qc_idxs, y1, y2, ids in data_loader:
+        for cw_idxs, cc_poss, cc_idxs, qw_idxs, qc_poss, qc_idxs, y1, y2, ids in data_loader:
             # Setup for forward
             cw_idxs = cw_idxs.to(device)
+            cc_poss = cc_poss.to(device)
+            cc_idxs = cc_idxs.to(device)
             qw_idxs = qw_idxs.to(device)
-            if args.char_emb:
-                cc_idxs = cc_idxs.to(device)
-                qc_idxs = qc_idxs.to(device)
+            qc_poss = qc_poss.to(device)
+            qc_idxs = qc_idxs.to(device)
             batch_size = cw_idxs.size(0)
 
             # Forward
-            if args.char_emb:
-                log_p1, log_p2 = model(cw_idxs, qw_idxs, cc_idxs, qc_idxs)
-            else:
-                log_p1, log_p2 = model(cw_idxs, qw_idxs)
+            log_p1, log_p2 = model(cw_idxs, qw_idxs, cc_idxs, qc_idxs, cc_poss, qc_poss)
             y1, y2 = y1.to(device), y2.to(device)
             loss = F.nll_loss(log_p1, y1) + F.nll_loss(log_p2, y2)
             nll_meter.update(loss.item(), batch_size)

@@ -108,7 +108,7 @@ def get_train_args():
                         help='L2 weight decay.')
     parser.add_argument('--num_epochs',
                         type=int,
-                        default=30,
+                        default=10,
                         help='Number of epochs for which to train. Negative means forever.')
     parser.add_argument('--metric_name',
                         type=str,
@@ -292,3 +292,19 @@ def add_train_test_args(parser):
                         type=int,
                         default=200,
                         help='Dimension of character embedding.')
+    parser.add_argument('--para_limit',
+                        type=int,
+                        default=400,
+                        help='Max number of words in a paragraph')
+    parser.add_argument('--ques_limit',
+                        type=int,
+                        default=50,
+                        help='Max number of words to keep from a question')
+    parser.add_argument('--test_para_limit',
+                        type=int,
+                        default=1000,
+                        help='Max number of words in a paragraph at test time')
+    parser.add_argument('--test_ques_limit',
+                        type=int,
+                        default=100,
+                        help='Max number of words in a question at test time')

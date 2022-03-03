@@ -9,6 +9,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch_scatter
 
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from util import masked_softmax
@@ -77,14 +78,16 @@ class CharEmbedding(nn.Module):
         self.drop_prob = drop_prob
         self.embed = nn.Embedding.from_pretrained(word_vectors)
         self.char_embed = nn.Embedding(257, char_emb_dim, padding_idx=0) # 256 for UNK
-        self.char_embed.weight.data.normal_(0, word_vectors.std() / 4)
+        self.char_embed.weight.data.normal_(0, word_vectors.std())
+        self.char_embed.weight.data[0] = 0
         self.proj = nn.Linear(word_vectors.size(1)+char_emb_dim, hidden_size, bias=False)
         self.hwy = HighwayEncoder(2, hidden_size)
 
-    def forward(self, w, c):
+    def forward(self, w, c, p):
         emb_w = self.embed(w)   # (batch_size, seq_len, embed_size)
         emb_c = self.char_embed(torch.minimum(c, torch.full_like(c, 256)))
-        emb_c, _ = emb_c.max(dim=-2)
+        denom = torch_scatter.scatter(torch.ones_like(c), p, dim_size=w.shape[1], reduce="sum").unsqueeze(-1)
+        emb_c = torch_scatter.scatter(emb_c, p, dim=1, dim_size=emb_w.shape[1], reduce="sum") / (1e-3 + denom.sqrt())
         emb = torch.cat((emb_w, emb_c), dim=-1)
         emb = F.dropout(emb, self.drop_prob, self.training)
         emb = self.proj(emb)  # (batch_size, seq_len, hidden_size)
