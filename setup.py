@@ -247,13 +247,15 @@ def build_features(args, examples, data_type, out_file, word2idx_dict, is_test=F
     print(f"Converting {data_type} examples to indices...")
     meta = {}
     context_words = []
-    context_word_lens = [0]
+    context_word_ranges = []
     context_chars = []
-    context_char_lens = [0]
+    context_char_poss = []
+    context_char_ranges = []
     ques_words = []
-    ques_word_lens = [0]
+    ques_word_ranges = []
     ques_chars = []
-    ques_char_lens = [0]
+    ques_char_poss = []
+    ques_char_ranges = []
     y1s = []
     y2s = []
     ids = []
@@ -264,14 +266,38 @@ def build_features(args, examples, data_type, out_file, word2idx_dict, is_test=F
                     return word2idx_dict[each]
             return 1
 
-        context_words.extend(_get_word(token) for token in example["context_tokens"])
-        context_word_lens.append(len(example["context_tokens"]))
-        ques_words.extend(_get_word(token) for token in example["ques_tokens"])
-        ques_word_lens.append(len(example["ques_tokens"]))
-        context_chars.extend(ord(char) for token in example["context_chars"] for char in token)
-        context_char_lens.extend(len(token) for token in example["context_chars"])
-        ques_chars.extend(ord(char) for token in example["ques_chars"] for char in token)
-        ques_char_lens.extend(len(token) for token in example["ques_chars"])
+        context_word = [_get_word(token) for token in example["context_tokens"]]
+        # context_char = [ord(char) for token in example["context_chars"] for char in token+[" "]][:-1]
+        # context_char_pos = [j for i, token in enumerate(example["context_chars"]) for j in [i]*len(token)+[-1]][:-1]
+        context_char = [ord(char) for token in example["context_chars"] for char in token]
+        context_char_pos = [j for i, token in enumerate(example["context_chars"]) for j in [i]*len(token)]
+        if (context_words and context_word == context_words[context_word_ranges[-1][0]: context_word_ranges[-1][1]]
+                and context_char == context_chars[context_char_ranges[-1][0]: context_char_ranges[-1][1]]
+                and context_char_pos == context_char_poss[context_char_ranges[-1][0]: context_char_ranges[-1][1]]):
+            context_word_ranges.append(context_word_ranges[-1])
+            context_char_ranges.append(context_char_ranges[-1])
+        else:
+            context_word_ranges.append([len(context_words), len(context_words)+len(context_word)])
+            context_char_ranges.append([len(context_chars), len(context_chars)+len(context_char)])
+            context_words.extend(context_word)
+            context_chars.extend(context_char)
+            context_char_poss.extend(context_char_pos)
+        ques_word = [_get_word(token) for token in example["ques_tokens"]]
+        # ques_char = [ord(char) for token in example["ques_chars"] for char in token+[" "]][:-1]
+        # ques_char_pos = [j for i, token in enumerate(example["ques_chars"]) for j in [i]*len(token)+[-1]][:-1]
+        ques_char = [ord(char) for token in example["ques_chars"] for char in token]
+        ques_char_pos = [j for i, token in enumerate(example["ques_chars"]) for j in [i]*len(token)]
+        if (ques_words and ques_word == ques_words[ques_word_ranges[-1][0]: ques_word_ranges[-1][1]]
+                and ques_char == ques_chars[ques_char_ranges[-1][0]: ques_char_ranges[-1][1]]
+                and ques_char_pos == ques_char_poss[ques_char_ranges[-1][0]: ques_char_ranges[-1][1]]):
+            ques_word_ranges.append(ques_word_ranges[-1])
+            ques_char_ranges.append(ques_char_ranges[-1])
+        else:
+            ques_word_ranges.append([len(ques_words), len(ques_words)+len(ques_word)])
+            ques_char_ranges.append([len(ques_chars), len(ques_chars)+len(ques_char)])
+            ques_words.extend(ques_word)
+            ques_chars.extend(ques_char)
+            ques_char_poss.extend(ques_char_pos)
 
         if is_answerable(example):
             start, end = example["y1s"][-1], example["y2s"][-1]
@@ -285,12 +311,14 @@ def build_features(args, examples, data_type, out_file, word2idx_dict, is_test=F
     np.savez(out_file,
              context_words=np.array(context_words, dtype=np.int32),
              context_chars=np.array(context_chars, dtype=np.int32),
+             context_char_poss=np.array(context_char_poss, dtype=np.int32),
+             context_word_ranges=np.array(context_word_ranges, dtype=np.int32),
+             context_char_ranges=np.array(context_char_ranges, dtype=np.int32),
              ques_words=np.array(ques_words, dtype=np.int32),
              ques_chars=np.array(ques_chars, dtype=np.int32),
-             context_word_idxs=np.array(context_word_lens, dtype=np.int32).cumsum(),
-             context_char_idxs=np.array(context_char_lens, dtype=np.int32).cumsum(),
-             ques_word_idxs=np.array(ques_word_lens, dtype=np.int32).cumsum(),
-             ques_char_idxs=np.array(ques_char_lens, dtype=np.int32).cumsum(),
+             ques_char_poss=np.array(ques_char_poss, dtype=np.int32),
+             ques_word_ranges=np.array(ques_word_ranges, dtype=np.int32),
+             ques_char_ranges=np.array(ques_char_ranges, dtype=np.int32),
              y1s=np.array(y1s),
              y2s=np.array(y2s),
              ids=np.array(ids))

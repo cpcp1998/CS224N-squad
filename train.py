@@ -91,13 +91,13 @@ def main(args):
 
     # Get data loader
     log.info('Building dataset...')
-    train_dataset = SQuAD(args.train_record_file, args.use_squad_v2, args.para_limit, args.ques_limit)
+    train_dataset = SQuAD(args.train_record_file, args.use_squad_v2, args.para_limit, args.ques_limit, args.char_limit)
     train_loader = data.DataLoader(train_dataset,
                                    batch_size=args.batch_size,
                                    shuffle=True,
                                    num_workers=args.num_workers,
                                    collate_fn=collate_fn)
-    dev_dataset = SQuAD(args.dev_record_file, args.use_squad_v2, args.para_limit, args.ques_limit, True)
+    dev_dataset = SQuAD(args.dev_record_file, args.use_squad_v2, args.para_limit, args.ques_limit, args.char_limit, True)
     dev_loader = data.DataLoader(dev_dataset,
                                  batch_size=args.batch_size,
                                  shuffle=False,

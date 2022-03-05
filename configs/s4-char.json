@@ -1,0 +1,11 @@
+{
+    "model": "S4-char",
+    "hidden_size": 128,
+    "batch_size": 32,
+    "lr": 1e-3,
+    "optimizer": "adam",
+    "warmup": 2000,
+    "drop_prob": 0.1,
+    "max_len": 512,
+    "char_emb": true
+}

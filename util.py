@@ -41,18 +41,20 @@ class SQuAD(data.Dataset):
         data_path (str): Path to .npz file containing pre-processed dataset.
         use_v2 (bool): Whether to use SQuAD 2.0 questions. Otherwise only use SQuAD 1.1.
     """
-    def __init__(self, data_path, use_v2=True, para_limit=None, ques_limit=None, prune=False):
+    def __init__(self, data_path, use_v2=True, para_limit=1000, ques_limit=1000, char_limit=6, prune=False):
         super(SQuAD, self).__init__()
 
         dataset = np.load(data_path)
         self.context_words = torch.from_numpy(dataset['context_words']).long()
         self.context_chars = torch.from_numpy(dataset['context_chars']).long()
-        self.context_word_idxs = torch.from_numpy(dataset['context_word_idxs']).long()
-        self.context_char_idxs = torch.from_numpy(dataset['context_char_idxs']).long()
+        self.context_char_poss = torch.from_numpy(dataset['context_char_poss']).long()
+        self.context_word_ranges = torch.from_numpy(dataset['context_word_ranges']).long()
+        self.context_char_ranges = torch.from_numpy(dataset['context_char_ranges']).long()
         self.ques_words = torch.from_numpy(dataset['ques_words']).long()
         self.ques_chars = torch.from_numpy(dataset['ques_chars']).long()
-        self.ques_word_idxs = torch.from_numpy(dataset['ques_word_idxs']).long()
-        self.ques_char_idxs = torch.from_numpy(dataset['ques_char_idxs']).long()
+        self.ques_char_poss = torch.from_numpy(dataset['ques_char_poss']).long()
+        self.ques_word_ranges = torch.from_numpy(dataset['ques_word_ranges']).long()
+        self.ques_char_ranges = torch.from_numpy(dataset['ques_char_ranges']).long()
         self.y1s = torch.from_numpy(dataset['y1s']).long()
         self.y2s = torch.from_numpy(dataset['y2s']).long()
 
@@ -60,42 +62,62 @@ class SQuAD(data.Dataset):
 
         self.para_limit = para_limit
         self.ques_limit = ques_limit
+        self.char_limit = char_limit
 
         self.valid_idxs = [idx for idx in range(len(self.ids))
-                           if not prune or (self.context_word_idxs[idx+1]-self.context_word_idxs[idx] <= para_limit
-                                            and self.ques_word_idxs[idx+1]-self.ques_word_idxs[idx] <= ques_limit)]
+                           if not prune or (self.context_word_ranges[idx, 1]-self.context_word_ranges[idx, 0] <= para_limit
+                                            and self.ques_word_ranges[idx, 1]-self.ques_word_ranges[idx, 0] <= ques_limit)]
+
+    @staticmethod
+    def prune(word, char, char_pos, word_limit, char_limit):
+        if len(word) > word_limit:
+            word = word[:word_limit]
+            last_char = (char_pos == word_limit-1).nonzero()[-1]
+            char = char[:last_char+1]
+            char_pos = char_pos[:last_char+1]
+        if len(char) > char_limit:
+            word_begin = torch.cat((torch.ones(1, dtype=bool), char_pos[1:] != char_pos[:-1]))
+            word_idx = word_begin.cumsum(0)
+            word_len = word_idx.bincount()
+            char_idx = torch.ones(char_pos.size(0), dtype=torch.long)
+            char_idx[word_begin] = 1-word_len[:-1]
+            char_idx = char_idx.cumsum(0)
+            priority = char_idx * (word_idx.max() + 1) + word_idx
+            _, indices = priority.sort()
+            keep = torch.zeros(char_pos.size(0), dtype=bool)
+            keep[indices[:char_limit]] = True
+            char = char[keep]
+            char_pos = char_pos[keep]
+        return word, char, char_pos
 
     def __getitem__(self, idx):
-        def pos_array(idxs, dtype=torch.int64, fill_value=-1):
-            pos = torch.full((idxs[-1].item(),), fill_value, dtype=dtype)
-            for i in range(len(idxs)-1):
-                pos[idxs[i]: idxs[i+1]] = i
-            return pos
-
         idx = self.valid_idxs[idx]
-        cw_begin, cw_end = self.context_word_idxs[idx], self.context_word_idxs[idx+1]
-        qw_begin, qw_end = self.ques_word_idxs[idx], self.ques_word_idxs[idx+1]
-        if self.para_limit:
-            cw_end = min(cw_end, cw_begin+self.para_limit)
-        if self.ques_limit:
-            qw_end = min(qw_end, qw_begin+self.ques_limit)
 
-        context_char_idxs = self.context_char_idxs[cw_begin: cw_end+1]
-        ques_char_idxs = self.ques_char_idxs[qw_begin: qw_end+1]
+        def slice(array, ranges, idx):
+            start = ranges[idx, 0]
+            end = ranges[idx, 1]
+            return array[start: end]
 
+        context_word, context_char, context_char_pos = self.prune(
+            slice(self.context_words, self.context_word_ranges, idx),
+            slice(self.context_chars, self.context_char_ranges, idx),
+            slice(self.context_char_poss, self.context_char_ranges, idx),
+            self.para_limit, self.para_limit * self.char_limit,
+        )
+        ques_word, ques_char, ques_char_pos = self.prune(
+            slice(self.ques_words, self.ques_word_ranges, idx),
+            slice(self.ques_chars, self.ques_char_ranges, idx),
+            slice(self.ques_char_poss, self.ques_char_ranges, idx),
+            self.ques_limit, self.ques_limit * self.char_limit,
+        )
         y1 = self.y1s[idx]
         y2 = self.y2s[idx]
         if y2 >= self.para_limit:
             y1, y2 = -1, -1
 
-        example = (self.context_words[cw_begin: cw_end],
-                   pos_array(context_char_idxs - context_char_idxs[0]),
-                   self.context_chars[context_char_idxs[0]: context_char_idxs[-1]],
-                   self.ques_words[qw_begin: qw_end],
-                   pos_array(ques_char_idxs - ques_char_idxs[0]),
-                   self.ques_chars[ques_char_idxs[0]: ques_char_idxs[-1]],
-                   y1,
-                   y2,
+        example = (context_word, context_char_pos, context_char,
+                   ques_word, ques_char_pos, ques_char,
+                   y1, y2,
                    self.ids[idx])
 
         return example

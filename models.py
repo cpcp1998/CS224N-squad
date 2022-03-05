@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from util import masked_softmax
+import torch_scatter
 
 
 class BiDAF(nn.Module):
@@ -203,6 +204,7 @@ class S4Char(nn.Module):
 
         self.out = layers.S4Output(hidden_size=hidden_size,
                                    max_len=max_len,
+                                   depth=12,
                                    drop_prob=drop_prob)
 
     def forward(self, cw_idxs, qw_idxs, cc_idxs, qc_idxs, cc_poss, qc_poss):
@@ -228,6 +230,74 @@ class S4Char(nn.Module):
     def reset_s4(self):
         self.enc.reset_s4()
         self.out.reset_s4()
+
+
+class S4CharLevel(nn.Module):
+    def __init__(self, word_vectors, char_emb_dim, hidden_size, max_len, drop_prob=0.):
+        super(S4CharLevel, self).__init__()
+        self.drop_prob = drop_prob
+
+        self.emb = layers.CharEmbeddingChar(word_vectors=word_vectors,
+                                            char_emb_dim=char_emb_dim,
+                                            hidden_size=hidden_size,
+                                            drop_prob=drop_prob)
+        self.ln_emb = nn.LayerNorm(hidden_size)
+        self.ln_enc = nn.LayerNorm(hidden_size)
+        self.enc_c = layers.S4Stack(hidden_size=hidden_size,
+                                    num_layers=6,
+                                    max_len=2048,
+                                    gain=0.5,
+                                    drop_prob=drop_prob)
+        self.enc = layers.S4Stack(hidden_size=hidden_size,
+                                  num_layers=4,
+                                  max_len=max_len,
+                                  gain=0.5,
+                                  drop_prob=drop_prob)
+
+        self.att = layers.BiDAFAttention(hidden_size=hidden_size,
+                                         drop_prob=drop_prob)
+
+        self.out = layers.S4OutputSimple(hidden_size=hidden_size,
+                                         max_len=max_len,
+                                         depth=12,
+                                         drop_prob=drop_prob)
+
+    def encode(self, w_idxs, c_idxs, c_poss):
+        w_mask = torch.zeros_like(w_idxs) != w_idxs
+        c_mask_comb = torch.zeros_like(c_poss) != c_poss
+        c_mask_layer = torch.zeros_like(c_idxs) != c_idxs
+
+        emb = self.emb(w_idxs, c_idxs, c_poss)         # (batch_size, c_len, hidden_size)
+        emb = self.ln_emb(emb)
+        emb = self.enc_c(emb, c_mask_layer)
+        emb = emb * c_mask_comb.unsqueeze(-1)
+        # denom = torch_scatter.scatter(torch.ones_like(c_idxs), c_poss, dim_size=w_idxs.shape[1], reduce="sum").unsqueeze(-1)
+        # emb = torch_scatter.scatter(emb, c_poss, dim=1, dim_size=w_idxs.shape[1], reduce="sum") / (1e-3 + denom.sqrt())
+        emb = torch_scatter.scatter(emb, c_poss, dim=1, dim_size=w_idxs.shape[1], reduce="max")
+        emb = self.ln_enc(emb)
+
+        enc = self.enc(emb, w_mask)    # (batch_size, c_len, hidden_size)
+        return enc
+
+    def forward(self, cw_idxs, qw_idxs, cc_idxs, qc_idxs, cc_poss, qc_poss):
+        c_mask = torch.zeros_like(cw_idxs) != cw_idxs
+        q_mask = torch.zeros_like(qw_idxs) != qw_idxs
+        c_len, q_len = c_mask.sum(-1), q_mask.sum(-1)
+
+        c_enc = self.encode(cw_idxs, cc_idxs, cc_poss)
+        q_enc = self.encode(qw_idxs, qc_idxs, qc_poss)
+
+        att = self.att(c_enc, q_enc,
+                       c_mask, q_mask)    # (batch_size, c_len, 4 * hidden_size)
+
+        out = self.out(att, c_mask)  # 2 tensors, each (batch_size, c_len)
+
+        return out
+
+    def reset_s4(self):
+        self.enc.reset_s4()
+        self.out.reset_s4()
+        self.enc_c.reset_s4()
 
 
 class Transformer(nn.Module):
@@ -311,6 +381,12 @@ def get_model(args, word_vectors):
                        hidden_size=args.hidden_size,
                        max_len=args.max_len,
                        drop_prob=args.drop_prob)
+    elif args.model.lower() == "s4-char":
+        model = S4CharLevel(word_vectors=word_vectors,
+                            char_emb_dim=args.char_emb_dim,
+                            hidden_size=args.hidden_size,
+                            max_len=args.max_len,
+                            drop_prob=args.drop_prob)
     elif args.model.lower() == "transformer":
         model = Transformer(word_vectors=word_vectors,
                             char_emb_dim=args.char_emb_dim,

@@ -308,3 +308,7 @@ def add_train_test_args(parser):
                         type=int,
                         default=100,
                         help='Max number of words in a question at test time')
+    parser.add_argument('--char_limit',
+                        type=int,
+                        default=5,
+                        help='Max number of chars to keep from a paragraph')
