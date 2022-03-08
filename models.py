@@ -233,7 +233,7 @@ class S4Char(nn.Module):
 
 
 class S4CharLevel(nn.Module):
-    def __init__(self, word_vectors, char_emb_dim, hidden_size, max_len, drop_prob=0., char_drop_prob=0.):
+    def __init__(self, word_vectors, char_emb_dim, hidden_size, max_len, drop_prob=0.):
         super(S4CharLevel, self).__init__()
         self.drop_prob = drop_prob
 
@@ -245,11 +245,11 @@ class S4CharLevel(nn.Module):
         self.ln_enc = nn.LayerNorm(hidden_size)
         self.enc_c = layers.S4Stack(hidden_size=hidden_size,
                                     num_layers=6,
-                                    max_len=3072,
+                                    max_len=2048,
                                     gain=0.5,
-                                    drop_prob=char_drop_prob)
+                                    drop_prob=drop_prob)
         self.enc = layers.S4Stack(hidden_size=hidden_size,
-                                  num_layers=6,
+                                  num_layers=4,
                                   max_len=max_len,
                                   gain=0.5,
                                   drop_prob=drop_prob)
@@ -257,10 +257,10 @@ class S4CharLevel(nn.Module):
         self.att = layers.BiDAFAttention(hidden_size=hidden_size,
                                          drop_prob=drop_prob)
 
-        self.out = layers.S4Output(hidden_size=hidden_size,
-                                   max_len=max_len,
-                                   depth=12,
-                                   drop_prob=drop_prob)
+        self.out = layers.S4OutputSimple(hidden_size=hidden_size,
+                                         max_len=max_len,
+                                         depth=12,
+                                         drop_prob=drop_prob)
 
     def encode(self, w_idxs, c_idxs, c_poss):
         w_mask = torch.zeros_like(w_idxs) != w_idxs
@@ -386,8 +386,7 @@ def get_model(args, word_vectors):
                             char_emb_dim=args.char_emb_dim,
                             hidden_size=args.hidden_size,
                             max_len=args.max_len,
-                            drop_prob=args.drop_prob,
-                            char_drop_prob=args.char_drop_prob)
+                            drop_prob=args.drop_prob)
     elif args.model.lower() == "transformer":
         model = Transformer(word_vectors=word_vectors,
                             char_emb_dim=args.char_emb_dim,

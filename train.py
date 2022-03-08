@@ -132,13 +132,12 @@ def main(args):
 
                 # Backward
                 loss.backward()
+                nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                optimizer.step()
                 if hasattr(model.module, "reset_s4"):
                     model.module.reset_s4()
-                if (step // batch_size + 1) % args.grad_accu == 0:
-                    nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
-                    optimizer.step()
-                    scheduler.step(step // batch_size // args.grad_accu)
-                    ema(model, step // batch_size // args.grad_accu)
+                scheduler.step(step // batch_size)
+                ema(model, step // batch_size)
 
                 # Log info
                 step += batch_size

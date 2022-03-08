@@ -746,16 +746,15 @@ class S4OutputSimple(nn.Module):
                            max_len=max_len,
                            gain=0.5,
                            drop_prob=drop_prob)
-        self.linear_1 = nn.Linear(2*hidden_size, 1)
-        self.linear_2 = nn.Linear(2*hidden_size, 1)
+        self.linear_1 = nn.Linear(hidden_size, 1)
+        self.linear_2 = nn.Linear(hidden_size, 1)
 
     def forward(self, att, mask):
         att = self.input(att)
         m0 = self.mod(att, mask)
-        m1 = self.mod(m0, mask)
         # Shapes: (batch_size, seq_len, 1)
-        logits_1 = self.linear_1(torch.cat((m0, m1), dim=-1))
-        logits_2 = self.linear_2(torch.cat((m0, m1), dim=-1))
+        logits_1 = self.linear_1(m0)
+        logits_2 = self.linear_2(m0)
 
         # Shapes: (batch_size, seq_len)
         log_p1 = masked_softmax(logits_1.squeeze(), mask, log_softmax=True)
