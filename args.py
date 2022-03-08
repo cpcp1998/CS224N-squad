@@ -108,7 +108,7 @@ def get_train_args():
                         help='L2 weight decay.')
     parser.add_argument('--num_epochs',
                         type=int,
-                        default=10,
+                        default=30,
                         help='Number of epochs for which to train. Negative means forever.')
     parser.add_argument('--metric_name',
                         type=str,
@@ -244,6 +244,10 @@ def add_train_test_args(parser):
                         default=64,
                         help='Batch size per GPU. Scales automatically when \
                               multiple GPUs are available.')
+    parser.add_argument('--grad_accu',
+                        type=int,
+                        default=1,
+                        help='Gradient accumulation.')
     parser.add_argument('--use_squad_v2',
                         type=lambda s: s.lower().startswith('t'),
                         default=True,
@@ -284,6 +288,10 @@ def add_train_test_args(parser):
                         type=float,
                         default=0.2,
                         help='Probability of zeroing an activation in dropout layers.')
+    parser.add_argument('--char_drop_prob',
+                        type=float,
+                        default=0.5,
+                        help='Probability of zeroing an activation in dropout layers (char-level).')
     parser.add_argument('--char_emb',
                         dest='char_emb',
                         action='store_true',
@@ -310,5 +318,5 @@ def add_train_test_args(parser):
                         help='Max number of words in a question at test time')
     parser.add_argument('--char_limit',
                         type=int,
-                        default=5,
+                        default=7,
                         help='Max number of chars to keep from a paragraph')
