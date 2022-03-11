@@ -73,22 +73,23 @@ class HighwayEncoder(nn.Module):
 
 
 class CharEmbedding(nn.Module):
-    def __init__(self, word_vectors, char_emb_dim, hidden_size, drop_prob):
+    def __init__(self, word_vectors, char_emb_dim, hidden_size, char_count, drop_prob):
         super(CharEmbedding, self).__init__()
         self.drop_prob = drop_prob
         self.embed = nn.Embedding.from_pretrained(word_vectors)
-        self.char_embed = nn.Embedding(257, char_emb_dim, padding_idx=0) # 256 for UNK
-        self.char_embed.weight.data.normal_(0, word_vectors.std())
+        self.char_embed = nn.Embedding(char_count, char_emb_dim, padding_idx=0)
+        self.char_embed.weight.data.normal_(0, word_vectors.std() / 4)
         self.char_embed.weight.data[0] = 0
+        self.char_ln = nn.LayerNorm(char_emb_dim)
         self.proj = nn.Linear(word_vectors.size(1)+char_emb_dim, hidden_size, bias=False)
         self.hwy = HighwayEncoder(2, hidden_size)
 
     def forward(self, w, c, p):
         emb_w = self.embed(w)   # (batch_size, seq_len, embed_size)
-        c[c == ord(" ")] = 0
-        emb_c = self.char_embed(torch.minimum(c, torch.full_like(c, 256)))
+        emb_c = self.char_embed(c)
         denom = torch_scatter.scatter(torch.ones_like(c), p, dim_size=w.shape[1], reduce="sum").unsqueeze(-1)
-        emb_c = torch_scatter.scatter(emb_c, p, dim=1, dim_size=emb_w.shape[1], reduce="sum") / (1e-3 + denom.sqrt())
+        emb_c = torch_scatter.scatter(emb_c, p, dim=1, dim_size=emb_w.shape[1], reduce="max") # / (1e-3 + denom.sqrt())
+        emb_c = self.char_ln(emb_c) / 2
         emb = torch.cat((emb_w, emb_c), dim=-1)
         emb = F.dropout(emb, self.drop_prob, self.training)
         emb = self.proj(emb)  # (batch_size, seq_len, hidden_size)
@@ -98,12 +99,12 @@ class CharEmbedding(nn.Module):
 
 
 class CharEmbeddingChar(nn.Module):
-    def __init__(self, word_vectors, char_emb_dim, hidden_size, drop_prob):
+    def __init__(self, word_vectors, char_emb_dim, hidden_size, char_count, drop_prob):
         super(CharEmbeddingChar, self).__init__()
         self.drop_prob = drop_prob
         self.embed = nn.Embedding.from_pretrained(word_vectors)
-        self.char_embed = nn.Embedding(257, char_emb_dim, padding_idx=0) # 256 for UNK
-        self.char_embed.weight.data.normal_(0, word_vectors.std())
+        self.char_embed = nn.Embedding(char_count, char_emb_dim, padding_idx=0)
+        self.char_embed.weight.data.normal_(0, word_vectors.std() * 4)
         self.char_embed.weight.data[0] = 0
         self.proj = nn.Linear(word_vectors.size(1)+char_emb_dim, hidden_size, bias=False)
         self.hwy = HighwayEncoder(2, hidden_size)
@@ -111,7 +112,7 @@ class CharEmbeddingChar(nn.Module):
     def forward(self, w, c, p):
         w = torch.gather(w, 1, p)
         emb_w = self.embed(w)   # (batch_size, seq_len, embed_size)
-        emb_c = self.char_embed(torch.minimum(c, torch.full_like(c, 256)))
+        emb_c = self.char_embed(c)
         emb = torch.cat((emb_w, emb_c), dim=-1)
         emb = F.dropout(emb, self.drop_prob, self.training)
         emb = self.proj(emb)  # (batch_size, seq_len, hidden_size)
@@ -490,6 +491,33 @@ class S4StackShare(nn.Module):
         self.block.transform.reset_s4()
 
 
+class S4AttnStack(nn.Module):
+    def __init__(self,
+                 hidden_size,
+                 num_layers,
+                 num_head,
+                 max_len,
+                 gain,
+                 drop_prob=0.):
+        super(S4AttnStack, self).__init__()
+        self.s4 = nn.ModuleList([ResidualBlock(hidden_size, gain,
+                                               BiS4(hidden_size, 64, max_len, drop_prob))
+                                 for _ in range(num_layers)])
+        self.attn = nn.ModuleList([ResidualBlock(hidden_size, gain,
+                                                 SelfAttention(hidden_size, hidden_size, num_head, drop_prob))
+                                   for _ in range(num_layers)])
+
+    def forward(self, x, mask):
+        for s4, attn in zip(self.s4, self.attn):
+            x = s4(x, mask)
+            x = attn(x, mask)
+        return x
+
+    def reset_s4(self):
+        for s4 in self.s4:
+            s4.transform.reset_s4()
+
+
 class TransformerBlock(nn.Module):
     def __init__(self,
                  hidden_size,
@@ -755,6 +783,38 @@ class S4OutputSimple(nn.Module):
         # Shapes: (batch_size, seq_len, 1)
         logits_1 = self.linear_1(m0)
         logits_2 = self.linear_2(m0)
+
+        # Shapes: (batch_size, seq_len)
+        log_p1 = masked_softmax(logits_1.squeeze(), mask, log_softmax=True)
+        log_p2 = masked_softmax(logits_2.squeeze(), mask, log_softmax=True)
+
+        return log_p1, log_p2
+
+    def reset_s4(self):
+        self.mod.reset_s4()
+
+
+class S4AttnOutput(nn.Module):
+    def __init__(self, hidden_size, max_len, num_head, depth, drop_prob):
+        super(S4AttnOutput, self).__init__()
+        self.input = nn.Linear(4 * hidden_size, hidden_size)
+        self.mod = S4AttnStack(hidden_size=hidden_size,
+                               num_layers=depth,
+                               num_head=num_head,
+                               max_len=max_len,
+                               gain=0.5,
+                               drop_prob=drop_prob)
+        self.linear_1 = nn.Linear(2*hidden_size, 1)
+        self.linear_2 = nn.Linear(2*hidden_size, 1)
+
+    def forward(self, att, mask):
+        att = self.input(att)
+        m0 = self.mod(att, mask)
+        m1 = self.mod(m0, mask)
+        m2 = self.mod(m1, mask)
+        # Shapes: (batch_size, seq_len, 1)
+        logits_1 = self.linear_1(torch.cat((m0, m1), dim=-1))
+        logits_2 = self.linear_2(torch.cat((m0, m2), dim=-1))
 
         # Shapes: (batch_size, seq_len)
         log_p1 = masked_softmax(logits_1.squeeze(), mask, log_softmax=True)

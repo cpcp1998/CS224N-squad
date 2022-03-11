@@ -24,6 +24,7 @@ from subprocess import run
 from tqdm import tqdm
 from zipfile import ZipFile
 
+from subword import Tokenizer
 
 def download_url(url, output_path, show_progress=True):
     class DownloadProgressBar(tqdm):
@@ -266,10 +267,10 @@ def build_features(args, examples, data_type, out_file, word2idx_dict, is_test=F
                     return word2idx_dict[each]
             return 1
 
+        example["context_chars"] = [tokenizer.tokenize("".join(token)) for token in example["context_chars"]]
+        example["ques_chars"] = [tokenizer.tokenize("".join(token)) for token in example["ques_chars"]]
         context_word = [_get_word(token) for token in example["context_tokens"]]
-        # context_char = [ord(char) for token in example["context_chars"] for char in token+[" "]][:-1]
-        # context_char_pos = [j for i, token in enumerate(example["context_chars"]) for j in [i]*len(token)+[-1]][:-1]
-        context_char = [ord(char) for token in example["context_chars"] for char in token]
+        context_char = [char for token in example["context_chars"] for char in token]
         context_char_pos = [j for i, token in enumerate(example["context_chars"]) for j in [i]*len(token)]
         if (context_words and context_word == context_words[context_word_ranges[-1][0]: context_word_ranges[-1][1]]
                 and context_char == context_chars[context_char_ranges[-1][0]: context_char_ranges[-1][1]]
@@ -283,9 +284,7 @@ def build_features(args, examples, data_type, out_file, word2idx_dict, is_test=F
             context_chars.extend(context_char)
             context_char_poss.extend(context_char_pos)
         ques_word = [_get_word(token) for token in example["ques_tokens"]]
-        # ques_char = [ord(char) for token in example["ques_chars"] for char in token+[" "]][:-1]
-        # ques_char_pos = [j for i, token in enumerate(example["ques_chars"]) for j in [i]*len(token)+[-1]][:-1]
-        ques_char = [ord(char) for token in example["ques_chars"] for char in token]
+        ques_char = [char for token in example["ques_chars"] for char in token]
         ques_char_pos = [j for i, token in enumerate(example["ques_chars"]) for j in [i]*len(token)]
         if (ques_words and ques_word == ques_words[ques_word_ranges[-1][0]: ques_word_ranges[-1][1]]
                 and ques_char == ques_chars[ques_char_ranges[-1][0]: ques_char_ranges[-1][1]]
@@ -371,6 +370,7 @@ if __name__ == '__main__':
 
     # Import spacy language model
     nlp = spacy.blank("en")
+    tokenizer = Tokenizer.load(args_.bpe_file)
 
     # Preprocess dataset
     args_.train_file = url_to_data_path(args_.train_url)

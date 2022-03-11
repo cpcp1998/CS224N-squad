@@ -218,6 +218,9 @@ def add_common_args(parser):
     parser.add_argument('--test_eval_file',
                         type=str,
                         default='./data/test_eval.json')
+    parser.add_argument('--bpe_file',
+                        type=str,
+                        default='./data/bpe.json')
 
 
 def add_train_test_args(parser):
@@ -302,11 +305,11 @@ def add_train_test_args(parser):
                         help='Max number of words to keep from a question')
     parser.add_argument('--test_para_limit',
                         type=int,
-                        default=1000,
+                        default=400,
                         help='Max number of words in a paragraph at test time')
     parser.add_argument('--test_ques_limit',
                         type=int,
-                        default=100,
+                        default=400,
                         help='Max number of words in a question at test time')
     parser.add_argument('--char_limit',
                         type=int,

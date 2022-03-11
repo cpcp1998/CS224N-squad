@@ -11,6 +11,8 @@ import torch.nn.functional as F
 from util import masked_softmax
 import torch_scatter
 
+from subword import Tokenizer
+
 
 class BiDAF(nn.Module):
     """Baseline BiDAF model for SQuAD.
@@ -183,13 +185,14 @@ class QANetChar(nn.Module):
 
 
 class S4Char(nn.Module):
-    def __init__(self, word_vectors, char_emb_dim, hidden_size, max_len, drop_prob=0.):
+    def __init__(self, word_vectors, char_emb_dim, hidden_size, max_len, char_count, drop_prob=0.):
         super(S4Char, self).__init__()
         self.drop_prob = drop_prob
 
         self.emb = layers.CharEmbedding(word_vectors=word_vectors,
                                         char_emb_dim=char_emb_dim,
                                         hidden_size=hidden_size,
+                                        char_count=char_count,
                                         drop_prob=drop_prob)
         self.ln_emb = nn.LayerNorm(hidden_size)
 
@@ -232,24 +235,78 @@ class S4Char(nn.Module):
         self.out.reset_s4()
 
 
+class S4AttnChar(nn.Module):
+    def __init__(self, word_vectors, char_emb_dim, hidden_size, num_head, max_len, char_count, drop_prob=0.):
+        super(S4AttnChar, self).__init__()
+        self.drop_prob = drop_prob
+
+        self.emb = layers.CharEmbedding(word_vectors=word_vectors,
+                                        char_emb_dim=char_emb_dim,
+                                        hidden_size=hidden_size,
+                                        char_count=char_count,
+                                        drop_prob=drop_prob)
+        self.ln_emb = nn.LayerNorm(hidden_size)
+
+        self.enc = layers.S4AttnStack(hidden_size=hidden_size,
+                                      num_layers=3,
+                                      num_head=num_head,
+                                      max_len=max_len,
+                                      gain=0.5,
+                                      drop_prob=drop_prob)
+
+        self.att = layers.BiDAFAttention(hidden_size=hidden_size,
+                                         drop_prob=drop_prob)
+
+        self.out = layers.S4AttnOutput(hidden_size=hidden_size,
+                                       max_len=max_len,
+                                       num_head=num_head,
+                                       depth=6,
+                                       drop_prob=drop_prob)
+
+    def forward(self, cw_idxs, qw_idxs, cc_idxs, qc_idxs, cc_poss, qc_poss):
+        c_mask = torch.zeros_like(cw_idxs) != cw_idxs
+        q_mask = torch.zeros_like(qw_idxs) != qw_idxs
+        c_len, q_len = c_mask.sum(-1), q_mask.sum(-1)
+
+        c_emb = self.emb(cw_idxs, cc_idxs, cc_poss)         # (batch_size, c_len, hidden_size)
+        q_emb = self.emb(qw_idxs, qc_idxs, qc_poss)         # (batch_size, q_len, hidden_size)
+        c_emb = self.ln_emb(c_emb)
+        q_emb = self.ln_emb(q_emb)
+
+        c_enc = self.enc(c_emb, c_mask)    # (batch_size, c_len, hidden_size)
+        q_enc = self.enc(q_emb, q_mask)    # (batch_size, q_len, hidden_size)
+
+        att = self.att(c_enc, q_enc,
+                       c_mask, q_mask)    # (batch_size, c_len, 4 * hidden_size)
+
+        out = self.out(att, c_mask)  # 2 tensors, each (batch_size, c_len)
+
+        return out
+
+    def reset_s4(self):
+        self.enc.reset_s4()
+        self.out.reset_s4()
+
+
 class S4CharLevel(nn.Module):
-    def __init__(self, word_vectors, char_emb_dim, hidden_size, max_len, drop_prob=0.):
+    def __init__(self, word_vectors, char_emb_dim, hidden_size, max_len, char_count, drop_prob=0.):
         super(S4CharLevel, self).__init__()
         self.drop_prob = drop_prob
 
         self.emb = layers.CharEmbeddingChar(word_vectors=word_vectors,
                                             char_emb_dim=char_emb_dim,
                                             hidden_size=hidden_size,
+                                            char_count=char_count,
                                             drop_prob=drop_prob)
         self.ln_emb = nn.LayerNorm(hidden_size)
         self.ln_enc = nn.LayerNorm(hidden_size)
         self.enc_c = layers.S4Stack(hidden_size=hidden_size,
-                                    num_layers=6,
+                                    num_layers=4,
                                     max_len=2048,
                                     gain=0.5,
                                     drop_prob=drop_prob)
         self.enc = layers.S4Stack(hidden_size=hidden_size,
-                                  num_layers=4,
+                                  num_layers=3,
                                   max_len=max_len,
                                   gain=0.5,
                                   drop_prob=drop_prob)
@@ -257,10 +314,10 @@ class S4CharLevel(nn.Module):
         self.att = layers.BiDAFAttention(hidden_size=hidden_size,
                                          drop_prob=drop_prob)
 
-        self.out = layers.S4OutputSimple(hidden_size=hidden_size,
-                                         max_len=max_len,
-                                         depth=12,
-                                         drop_prob=drop_prob)
+        self.out = layers.S4Output(hidden_size=hidden_size,
+                                   max_len=max_len,
+                                   depth=8,
+                                   drop_prob=drop_prob)
 
     def encode(self, w_idxs, c_idxs, c_poss):
         w_mask = torch.zeros_like(w_idxs) != w_idxs
@@ -277,6 +334,7 @@ class S4CharLevel(nn.Module):
         emb = self.ln_enc(emb)
 
         enc = self.enc(emb, w_mask)    # (batch_size, c_len, hidden_size)
+        enc = emb
         return enc
 
     def forward(self, cw_idxs, qw_idxs, cc_idxs, qc_idxs, cc_poss, qc_poss):
@@ -341,6 +399,8 @@ class Transformer(nn.Module):
 
 
 def get_model(args, word_vectors):
+    tokenizer = Tokenizer.load(args.bpe_file)
+    char_count = len(tokenizer)
     if args.model.lower() == "bidaf":
         model = BiDAF(word_vectors=word_vectors,
                       hidden_size=args.hidden_size,
@@ -380,12 +440,22 @@ def get_model(args, word_vectors):
                        char_emb_dim=args.char_emb_dim,
                        hidden_size=args.hidden_size,
                        max_len=args.max_len,
+                       char_count=char_count,
                        drop_prob=args.drop_prob)
+    elif args.model.lower() == "s4-attn":
+        model = S4AttnChar(word_vectors=word_vectors,
+                           char_emb_dim=args.char_emb_dim,
+                           hidden_size=args.hidden_size,
+                           max_len=args.max_len,
+                           num_head=args.num_head,
+                           char_count=char_count,
+                           drop_prob=args.drop_prob)
     elif args.model.lower() == "s4-char":
         model = S4CharLevel(word_vectors=word_vectors,
                             char_emb_dim=args.char_emb_dim,
                             hidden_size=args.hidden_size,
                             max_len=args.max_len,
+                            char_count=char_count,
                             drop_prob=args.drop_prob)
     elif args.model.lower() == "transformer":
         model = Transformer(word_vectors=word_vectors,
